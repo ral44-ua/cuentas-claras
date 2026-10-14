@@ -1,0 +1,9 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- círculo de gasto con una porción separada -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M51,34 L51,56 L73,56 A22,22 0 1,1 51,34 Z"/>
+    <path android:fillColor="#FAB219"
+        android:pathData="M56,29 A22,22 0 0,1 78,51 L56,51 Z"/>
+</vector>
