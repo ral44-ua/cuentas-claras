@@ -113,9 +113,12 @@ main{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px
 .item .t small{display:block;color:var(--muted);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .item .a{font-weight:700;text-align:right;white-space:nowrap}
 .item .a small{display:block;font-weight:500;font-size:12px;color:var(--muted)}
-.dayhead{font-size:12px;color:var(--muted);font-weight:600;text-transform:capitalize;padding:12px 0 2px;display:flex;justify-content:space-between}
+.dayhead{font-size:12px;color:var(--muted);font-weight:600;padding:12px 0 2px;display:flex;justify-content:space-between}
 .empty{text-align:center;padding:22px 8px;color:var(--ink-2)}
 .empty b{display:block;color:var(--ink);font-size:16px;margin-bottom:4px}
+.tag.auto{color:var(--accent);background:var(--accent-soft)}
+.steps{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px;color:var(--ink-2);font-size:14px}
+.steps b{color:var(--ink)}
 .tag{font-size:10.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--warn-ink);background:var(--warn-soft);padding:1px 6px;border-radius:5px;margin-left:6px;vertical-align:1px}
 
 /* controls */
@@ -236,7 +239,7 @@ const MONTHS=['enero','febrero','marzo','abril','mayo','junio','julio','agosto',
 const MSHORT=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
 const monthLabel=ym=>{const[y,m]=ym.split('-').map(Number);return `${MONTHS[m-1]} ${y}`};
 const monthShort=ym=>{const[y,m]=ym.split('-').map(Number);return `${MSHORT[m-1]} ${String(y).slice(2)}`};
-const dayLabel=s=>{const[y,m,d]=s.split('-').map(Number);const dt=new Date(y,m-1,d);return dt.toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long'})};
+const dayLabel=s=>{const[y,m,d]=s.split('-').map(Number);const dt=new Date(y,m-1,d);const t=dt.toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long'});return t.charAt(0).toUpperCase()+t.slice(1)};
 const parseNum=v=>{if(v==null)return NaN;let s=String(v).trim().replace(/[\s€]/g,'');if(s.includes(',')){s=s.replace(/\./g,'').replace(',','.')}const n=parseFloat(s);return isFinite(n)?n:NaN};
 const newId=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 const r2=n=>Math.round(n*100)/100;
@@ -256,7 +259,7 @@ function defaultConfig(){return{
   v:1,budget:0,warnPct:80,
   cats:[{id:'viv',name:'Vivienda',slot:0,limit:0},{id:'super',name:'Supermercado',slot:1,limit:0},{id:'rest',name:'Restaurantes',slot:2,limit:0},{id:'trans',name:'Transporte',slot:3,limit:0},{id:'ocio',name:'Ocio',slot:4,limit:0},{id:'salud',name:'Salud',slot:5,limit:0},{id:'subs',name:'Suscripciones',slot:6,limit:0},{id:'otros',name:'Otros gastos',slot:7,limit:0}],
   incCats:[{id:'nomina',name:'Nómina'},{id:'extra',name:'Trabajos extra'},{id:'otrosi',name:'Otros ingresos'}],
-  fixed:[],inv:[],ack:{}
+  fixed:[],inv:[],ack:{},autoPay:false,mmap:{}
 }}
 const state={config:defaultConfig(),months:{}};
 let view='resumen', viewYM=curYM(), movFilter='all', ready=false, mode='local';
@@ -300,7 +303,9 @@ async function initStorage(){
     },err=>{if(first){first=false;clearTimeout(t);mode='local';loadLocal();finishLoad()}else toast('Se perdió la conexión con tus datos guardados')});
   }catch(e){mode='local';loadLocal();finishLoad()}
 }
-function finishLoad(){ready=true;$('#fab').disabled=false;render();checkPendingAlert()}
+function finishLoad(){ready=true;$('#fab').disabled=false;const r=importPending();render();
+  if(r){toast(r.n===1?'Se ha añadido 1 pago con tarjeta':`Se han añadido ${r.n} pagos con tarjeta`);const cur=curYM();if(r.befores[cur]&&afterExpenseChange(cur,r.befores[cur],false))return}
+  checkPendingAlert()}
 
 /* ---------- cálculos ---------- */
 const catById=id=>state.config.cats.find(c=>c.id===id);
@@ -333,33 +338,104 @@ function alertText(level,stats,ym){
   if(level>=100)return{cls:'crit',title:'Has superado tu presupuesto',body:`En ${monthLabel(ym)} llevas ${fmt(stats.spent)} de ${fmt(b)}. Te has pasado ${fmt(-left)}.`};
   return{cls:'warn',title:`Has llegado al ${level} % de tu presupuesto`,body:`Llevas ${fmt(stats.spent)} de ${fmt(b)}. Te quedan ${fmt(left)} para lo que queda de ${MONTHS[+ym.slice(5)-1]}.`};
 }
-function showAlert(a,extra,ym,level){
-  notifyNative(a.title,a.body);
+function showAlert(a,extra,ym,level,nat){
+  if(nat!==false)notifyNative(a.title,a.body);
   openSheet(`<div class="alertbig"><div class="ring ${a.cls}">${a.cls==='crit'?ICON.stop:ICON.warn}</div><h3>${esc(a.title)}</h3><div class="hint">${esc(a.body)}</div>${extra?`<div class="hint">${extra}</div>`:''}</div><button class="btn primary block" id="ackbtn">Entendido</button>`);
-  $('#ackbtn').onclick=()=>{if(ym&&level){state.config.ack=state.config.ack||{};if((state.config.ack[ym]||0)<level){state.config.ack[ym]=level;saveConfig()}}closeSheet()};
+  $('#ackbtn').onclick=()=>{if(ym&&level){state.config.ack=state.config.ack||{};if((state.config.ack[ym]||0)<level){state.config.ack[ym]=level;saveConfig();syncNative()}}closeSheet()};
 }
 function checkPendingAlert(){
   const ym=curYM();const s=monthStats(ym);const lv=reached(s.spent,state.config.budget);
   const ack=(state.config.ack||{})[ym]||0;
-  if(lv&&lv>ack)showAlert(alertText(lv,s,ym),'',ym,lv);
+  if(lv&&lv>ack)showAlert(alertText(lv,s,ym),'',ym,lv,false);
 }
-function afterExpenseChange(ym,before){
+function afterExpenseChange(ym,before,nat){
   const after=monthStats(ym);const b=state.config.budget;
   const lb=reached(before.spent,b),la=reached(after.spent,b);
   const catMsgs=[];
   for(const c of state.config.cats){if(!c.limit)continue;const x=catReached(before.byCat[c.id]||0,c.limit),y=catReached(after.byCat[c.id]||0,c.limit);
     if(y>x)catMsgs.push(y>=100?`Has superado el límite de <b>${esc(c.name)}</b> (${fmt(after.byCat[c.id])} de ${fmt(c.limit)}).`:`<b>${esc(c.name)}</b> ya va por el ${y} % de su límite (${fmt(after.byCat[c.id])} de ${fmt(c.limit)}).`)}
-  if(la>lb){showAlert(alertText(la,after,ym),catMsgs.join('<br>'),ym,la);return true}
+  if(la>lb){showAlert(alertText(la,after,ym),catMsgs.join('<br>'),ym,la,nat);return true}
   if(catMsgs.length){const plain=catMsgs.join(' ').replace(/<[^>]+>/g,'');
-    notifyNative('Aviso de categoría',plain);
+    if(nat!==false)notifyNative('Aviso de categoría',plain);
     openSheet(`<div class="alertbig"><div class="ring warn">${ICON.warn}</div><h3>Aviso de categoría</h3><div class="hint">${catMsgs.join('<br>')}</div></div><button class="btn primary block" data-close>Entendido</button>`);return true}
   return false;
+}
+
+/* ---------- pagos con tarjeta automáticos (solo app Android) ---------- */
+const normTxt=s=>String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
+const MERCH_RULES=[
+ ['super',['mercadona','carrefour','lidl','aldi',' dia ','eroski','alcampo','consum','ahorramas','hipercor','supercor','bonpreu','caprabo','condis','gadis','froiz','masymas','spar ','simply',' bm ','supermercado','super ','fruteria','carniceria','panaderia','mercado','hiper']],
+ ['rest',['restaurante',' rest ',' bar ','cafe','cafeteria','burger','mcdonald','kfc','telepizza','domino','glovo','just eat','justeat','uber eats','ubereats','deliveroo','starbucks','foster','vips','montaditos','tagliatella','goiko','taberna','cerveceria','pizzeria','sushi','kebab','tapas','bodega','asador','churreria','heladeria']],
+ ['trans',['repsol','cepsa','galp','shell',' bp ','petronor','ballenoil','plenoil','gasolinera','estacion de servicio','renfe','metro','emt','tmb','cabify','uber','bolt','freenow','free now','taxi','parking','aparcamiento','alsa','ryanair','vueling','iberia','blablacar','autopista','peaje','iryo','ouigo','bicimad','itv','taller']],
+ ['ocio',['cine','cinesa','yelmo','kinepolis','teatro','ticketmaster','entradas','steam','playstation','nintendo','xbox','fnac',' game ','museo','concierto','discoteca','bolera','escape room','parque']],
+ ['salud',['farmacia','parafarmacia','clinica','dental','dentista','optica','hospital','fisio','medic','gimnasio',' gym','basic-fit','basic fit','mcfit','anytime fitness','holmes place']],
+ ['subs',['netflix','spotify','hbo','max.com','disney','prime video','amazon prime','apple.com','itunes','google play','youtube','movistar','vodafone','orange','digi ','yoigo','masmovil','pepephone','lowi','dazn','icloud','chatgpt','openai','patreon','filmin','audible']],
+ ['viv',['ikea','leroy','bricomart','bauhaus','iberdrola','endesa','naturgy','holaluz','canal de isabel','aguas de','comunidad de propietarios','alquiler','seguro hogar','conforama','maisons du monde']]
+];
+function guessCat(merchant){
+  const c=state.config;const key=normTxt(merchant);const n=' '+key+' ';
+  const m=c.mmap&&c.mmap[key];if(m&&catById(m))return m;
+  for(const [id,words] of MERCH_RULES){if(catById(id)&&words.some(w=>n.includes(w)))return id}
+  return catById('otros')?'otros':c.cats[0].id;
+}
+function importPending(){
+  if(!ANDROID||!ANDROID.takePending)return null;
+  let arr=[];try{arr=JSON.parse(ANDROID.takePending()||'[]')}catch(e){arr=[]}
+  if(!Array.isArray(arr)||!arr.length)return null;
+  const befores={},touched=new Set();let n=0;
+  for(const p of arr){const amt=r2(+p.amt);if(!(amt>0))continue;
+    const dt=new Date(+p.ts||Date.now());const d=`${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}`;const ym=d.slice(0,7);
+    if(!befores[ym])befores[ym]=monthStats(ym);
+    const merchant=String(p.merchant||'Pago con tarjeta').slice(0,60);
+    (state.months[ym]=state.months[ym]||[]).push({id:newId(),t:'g',amt,cat:guessCat(merchant),d,note:merchant,m:merchant,ts:+p.ts||Date.now(),auto:true,src:String(p.app||'').slice(0,40)});
+    touched.add(ym);n++}
+  touched.forEach(saveMonth);
+  return n?{n,befores}:null;
+}
+function syncNative(){
+  if(!ANDROID||!ANDROID.syncSummary)return;
+  try{const ym=curYM();const s=monthStats(ym);
+    ANDROID.syncSummary(JSON.stringify({ym,budget:+state.config.budget||0,spent:s.spent,fixed:s.fixedTotal,th:thresholds(),ack:(state.config.ack||{})[ym]||0,auto:!!state.config.autoPay}))}catch(e){}
+}
+const autoAllowed=()=>{try{return !!(ANDROID&&ANDROID.isAutoAllowed&&ANDROID.isAutoAllowed())}catch(e){return false}};
+let curSheet=null;
+function autoSheet(){
+  const allowed=autoAllowed(),on=!!state.config.autoPay;let sdk=0;try{sdk=ANDROID.sdk()}catch(e){}
+  const status=allowed&&on?`<span class="chip">${ICON.ok}Activado</span>`:allowed?`<span class="chip muted">Permiso concedido · desactivado</span>`:`<span class="chip warn">${ICON.warn}Falta el permiso</span>`;
+  openSheet(`<div class="spread"><h3>Pagos con tarjeta</h3>${status}</div>
+    <div class="hint">Cuando pagas con tarjeta o con el móvil, tu banco o Google Wallet te envía una notificación. Cuentas Claras la lee, apunta el gasto con su comercio y le pone categoría. Todo se procesa en tu móvil: la app no tiene acceso a internet y no lee mensajes ni correos.</div>
+    ${allowed?'':`<ol class="steps">
+      <li>Pulsa <b>Dar acceso</b>, busca <b>Cuentas Claras</b> en la lista y actívalo.</li>
+      ${sdk>=33?'<li>Si el interruptor aparece bloqueado («ajuste restringido»): pulsa <b>Información de la app</b>, toca el menú <b>⋮</b> de arriba a la derecha y elige <b>Permitir ajustes restringidos</b>. Después repite el paso 1.</li>':''}
+      <li>Comprueba que tu banco o Google Wallet te avisa de cada pago con una notificación.</li></ol>
+      <div class="grid2"><button class="btn primary" id="aopen">Dar acceso</button>${sdk>=33?'<button class="btn" id="ainfo">Información de la app</button>':''}</div>`}
+    ${allowed?`<div class="seg" id="aseg"><button data-v="on" aria-pressed="${on}">Activado</button><button data-v="off" aria-pressed="${!on}">Desactivado</button></div>
+      <div class="hint">Los pagos detectados aparecen en Movimientos con la etiqueta <span class="tag auto">auto</span>. Si alguno no es correcto, tócalo para cambiarlo o borrarlo. Si le cambias la categoría, la recordaré para ese comercio.</div>`:''}
+    <button class="btn block" data-close>Cerrar</button>`);
+  curSheet='auto';
+  const o=$('#aopen');if(o)o.onclick=()=>{if(!state.config.autoPay){state.config.autoPay=true;saveConfig();syncNative()}ANDROID.openAutoSettings()};
+  const i=$('#ainfo');if(i)i.onclick=()=>ANDROID.openAppInfo();
+  const sg=$('#aseg');if(sg)segBind(sg,v=>{state.config.autoPay=v==='on';saveConfig();syncNative();render();autoSheet();toast(v==='on'?'Pagos automáticos activados':'Pagos automáticos desactivados')});
+}
+window.__cuentasSync=()=>{
+  if(!ready)return;
+  const r=importPending();
+  if(r){render();toast(r.n===1?'Se ha añadido 1 pago con tarjeta':`Se han añadido ${r.n} pagos con tarjeta`);const cur=curYM();if(r.befores[cur]&&$('#sheet').hidden)afterExpenseChange(cur,r.befores[cur],false);return}
+  if(curSheet==='auto'&&!$('#sheet').hidden)autoSheet();
+  syncNative();
+};
+function autoBanner(){
+  if(!ANDROID||!ANDROID.isAutoAllowed)return '';
+  const c=state.config;
+  if(c.autoPay&&!autoAllowed())return `<div class="banner warn">${ICON.warn}<div style="flex:1">Los pagos con tarjeta automáticos están activados, pero falta el permiso de notificaciones.</div><button class="btn" data-act="auto">Revisar</button></div>`;
+  if(c.autoPay||c.autoPayDismissed)return '';
+  return `<div class="banner info">${ICON.info}<div style="flex:1"><b>Apunta tus pagos con tarjeta solos.</b> Cada vez que pagues, el gasto se añadirá automáticamente.</div><div style="display:flex;flex-direction:column;gap:6px"><button class="btn primary" data-act="auto">Activar</button><button class="btn ghost" data-act="autono" style="padding:2px">Ahora no</button></div></div>`;
 }
 
 /* ---------- UI genérica ---------- */
 let toastT;
 function toast(msg){const t=$('#toast');t.textContent=msg;t.hidden=false;clearTimeout(toastT);toastT=setTimeout(()=>t.hidden=true,2600)}
-function openSheet(html){$('#toast').hidden=true;$('#sheet-body').innerHTML=html;$('#sheet').hidden=false;document.body.classList.add('noscroll');
+function openSheet(html){curSheet=null;$('#toast').hidden=true;$('#sheet-body').innerHTML=html;$('#sheet').hidden=false;document.body.classList.add('noscroll');
   $$('#sheet-body [data-close]').forEach(b=>b.onclick=closeSheet);
   setTimeout(()=>{const f=$('#sheet-body [data-focus]');if(f)f.focus()},60)}
 function closeSheet(){$('#sheet').hidden=true;document.body.classList.remove('noscroll')}
@@ -384,6 +460,7 @@ const moneyTick=v=>Math.abs(v)>=1000?(v/1000).toLocaleString('es-ES',{maximumFra
 /* ---------- vistas ---------- */
 function render(){
   if(!ready)return;
+  syncNative();
   killCharts();
   $('#monthlabel').textContent=monthLabel(viewYM);
   $('#monthsw').style.visibility=(view==='resumen'||view==='movs')?'visible':'hidden';
@@ -442,7 +519,7 @@ function vResumen(){
       return `<div class="lg"><span class="dot" style="background:${catColor(id)}"></span><span class="nm">${esc(catName(id))}</span><span class="am num">${fmt0(v)}<span class="pc">${Math.round(v/total*100)} %</span></span>${lim?`<div class="meter sm"><i class="${lp>=100?'crit':lp>=c.warnPct?'warn':''}" style="width:${Math.min(lp,100)}%"></i></div><div class="lim num">${Math.round(lp)} % de su límite de ${fmt0(lim)}</div>`:''}</div>`}).join('')}</div></div></section>`;
   const pace=b||s.spent?`<section class="card"><h2>Ritmo de gasto</h2><div class="sub">Gasto acumulado día a día${b?' frente a tu presupuesto':''}</div><div class="chartbox"><canvas id="cPace" aria-label="Gasto acumulado del mes"></canvas></div></section>`:'';
   const hist=`<section class="card"><h2>Últimos 6 meses</h2><div class="sub">Ingresos y gastos de cada mes</div><div class="chartbox"><canvas id="cHist" aria-label="Ingresos y gastos de los últimos seis meses"></canvas></div></section>`;
-  return exampleBanner()+hero+trio+pace+reparto+hist+storageNote();
+  return autoBanner()+exampleBanner()+hero+trio+pace+reparto+hist+storageNote();
 }
 function chartsResumen(){
   const s=monthStats(viewYM),b=state.config.budget;const days=dim(viewYM);const isCur=viewYM===curYM();const today=+todayStr().slice(8);
@@ -496,7 +573,7 @@ function vMovs(){
 function itemHTML(t){
   const inc=t.t==='i';const name=inc?((incById(t.cat)||{}).name||'Ingreso'):catName(t.cat);
   const col=inc?css('--good'):catColor(t.cat);
-  return `<button class="item" data-tx="${esc(t.id)}"><span class="ic" style="background:${col}">${esc(name.slice(0,1).toUpperCase())}</span><span class="t"><b>${esc(t.note||name)}${t.ex?'<span class="tag">ejemplo</span>':''}</b><small>${esc(name)}</small></span><span class="a num ${inc?'pos':''}">${inc?'+':'−'}${fmt(t.amt)}</span></button>`;
+  return `<button class="item" data-tx="${esc(t.id)}"><span class="ic" style="background:${col}">${esc(name.slice(0,1).toUpperCase())}</span><span class="t"><b>${esc(t.note||name)}${t.ex?'<span class="tag">ejemplo</span>':''}${t.auto?'<span class="tag auto">auto</span>':''}</b><small>${esc(name)}${t.auto&&t.src?' · '+esc(t.src):''}</small></span><span class="a num ${inc?'pos':''}">${inc?'+':'−'}${fmt(t.amt)}</span></button>`;
 }
 
 function vPresu(){
@@ -581,6 +658,8 @@ function act(a){
   else if(a==='addinc'){const n=$('#newinc').value.trim();if(!n)return;state.config.incCats.push({id:newId(),name:n.slice(0,40)});saveConfig();render()}
   else if(a==='addinv')invSheet(null);
   else if(a==='sample')loadSample();
+  else if(a==='auto')autoSheet();
+  else if(a==='autono'){state.config.autoPayDismissed=true;saveConfig();render();toast('Puedes activarlo cuando quieras desde Ajustes')}
   else if(a==='clearex')clearExamples();
 }
 document.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(b&&!b.closest('#sheet-body'))act(b.dataset.act)});
@@ -599,6 +678,7 @@ function txSheet(id){
     <div class="field"><label>Categoría</label><div class="cats" id="tcats"></div></div>
     <div class="grid2"><div class="field"><label for="tdate">Fecha</label><input class="inp" type="date" id="tdate" value="${defDate}"></div>
     <div class="field"><label for="tnote">Nota</label><input class="inp" id="tnote" maxlength="60" placeholder="Opcional" value="${esc(t?t.note||'':'')}"></div></div>
+    ${t&&t.auto?`<div class="hint">Añadido automáticamente${t.src?' desde '+esc(t.src):''}. Si cambias la categoría, la recordaré para este comercio.</div>`:''}
     <div class="acts">${t?'<button class="btn danger" id="tdel">Borrar</button>':''}<button class="btn primary" id="tsave">Guardar</button></div>`);
   const drawCats=()=>{const list=type==='i'?state.config.incCats.map(c=>({id:c.id,name:c.name,col:css('--good')})):state.config.cats.map(c=>({id:c.id,name:c.name,col:slotColor(c.slot)}));
     if(!list.some(c=>c.id===cat))cat=list[0]&&list[0].id;
@@ -613,6 +693,8 @@ function txSheet(id){
     if(!/^\d{4}-\d{2}-\d{2}$/.test(d)){toast('Elige una fecha');return}
     const ym=d.slice(0,7);const before=monthStats(ym);
     const rec={id:t?t.id:newId(),t:type,amt:r2(amt),cat,d,note:$('#tnote').value.trim().slice(0,60),ts:t?t.ts||Date.now():Date.now()};
+    if(t){for(const k of ['auto','src','m','ex'])if(t[k])rec[k]=t[k];
+      if(t.auto&&type==='g'&&cat!==t.cat){state.config.mmap=state.config.mmap||{};state.config.mmap[normTxt(t.m||t.note)]=cat;saveConfig()}}
     if(found){state.months[found.ym]=state.months[found.ym].filter(x=>x.id!==t.id);if(found.ym!==ym)saveMonth(found.ym)}
     (state.months[ym]=state.months[ym]||[]).push(rec);saveMonth(ym);
     closeSheet();render();
@@ -698,10 +780,12 @@ function settingsSheet(){
   openSheet(`<h3>Ajustes</h3><div class="banner info">${ICON.info}<div>${where}</div></div>
     <div class="field"><label>Copia de seguridad</label><div class="grid2"><button class="btn" id="sexp">Exportar copia</button><label class="btn" for="simp" style="margin:0">Importar copia</label></div><input type="file" id="simp" accept=".json,application/json" hidden></div>
     <div id="sout"></div>
+    ${ANDROID&&ANDROID.isAutoAllowed?`<div class="field"><label>Pagos con tarjeta</label><button class="btn" id="sauto">${state.config.autoPay&&autoAllowed()?'Activado · ver detalles':'Apuntar pagos automáticamente'}</button></div>`:''}
     <div class="field"><label>Datos de ejemplo</label>${hasExamples()?'<button class="btn" id="sclr">Borrar datos de ejemplo</button>':'<button class="btn" id="ssam">Cargar datos de ejemplo</button>'}</div>
     <div class="field"><label>Zona peligrosa</label><button class="btn danger" id="sall">Borrar todos mis datos</button></div>
     <div class="foot">Cuentas Claras · las cantidades se muestran en euros</div>`);
   $('#sexp').onclick=exportData;
+  const sa=$('#sauto');if(sa)sa.onclick=autoSheet;
   $('#simp').onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>importData(String(r.result));r.readAsText(f)};
   const ss=$('#ssam');if(ss)ss.onclick=()=>{closeSheet();loadSample()};
   const sc=$('#sclr');if(sc)sc.onclick=()=>{closeSheet();clearExamples()};

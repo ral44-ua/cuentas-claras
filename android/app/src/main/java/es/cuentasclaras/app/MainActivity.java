@@ -1,15 +1,13 @@
 package es.cuentasclaras.app;
 
 import android.app.Activity;
-import android.app.Notification;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
-import android.app.PendingIntent;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -25,14 +23,15 @@ import java.nio.charset.StandardCharsets;
 /**
  * Cuentas Claras: la interfaz es una página web empaquetada en la app (assets/index.html).
  * Los datos se guardan en el almacenamiento interno de la app (localStorage del WebView).
- * El puente "CuentasAndroid" permite a la página lanzar notificaciones del sistema
- * y guardar copias de seguridad en un archivo.
+ * El puente "CuentasAndroid" permite a la página lanzar notificaciones, guardar copias de
+ * seguridad y recoger los pagos con tarjeta detectados por PaymentListener.
  */
 public class MainActivity extends Activity {
 
-    private static final String CHANNEL_ID = "avisos_presupuesto";
     private static final int REQ_SAVE = 11;
     private static final int REQ_OPEN = 12;
+
+    private static volatile MainActivity current;
 
     private WebView web;
     private ValueCallback<Uri[]> fileCallback;
@@ -41,7 +40,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        createChannel();
+        Notifs.ensureChannels(this);
         askNotificationPermission();
 
         web = new WebView(this);
@@ -88,14 +87,27 @@ public class MainActivity extends Activity {
         web.loadUrl("file:///android_asset/index.html");
     }
 
-    private void createChannel() {
-        if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel ch = new NotificationChannel(CHANNEL_ID, "Avisos de presupuesto",
-                    NotificationManager.IMPORTANCE_HIGH);
-            ch.setDescription("Te avisa cuando te acercas o superas tu límite de gasto mensual");
-            NotificationManager nm = getSystemService(NotificationManager.class);
-            if (nm != null) nm.createNotificationChannel(ch);
-        }
+    @Override
+    protected void onResume() {
+        super.onResume();
+        current = this;
+        syncWeb();
+    }
+
+    @Override
+    protected void onPause() {
+        if (current == this) current = null;
+        super.onPause();
+    }
+
+    /** Llamado por el servicio cuando detecta un pago con la app abierta. */
+    static void refreshIfOpen() {
+        final MainActivity a = current;
+        if (a != null) a.runOnUiThread(a::syncWeb);
+    }
+
+    private void syncWeb() {
+        if (web != null) web.evaluateJavascript("window.__cuentasSync && window.__cuentasSync()", null);
     }
 
     private void askNotificationPermission() {
@@ -105,31 +117,18 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void showNotification(String title, String body) {
-        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (nm == null) return;
-        Notification.Builder nb = Build.VERSION.SDK_INT >= 26
-                ? new Notification.Builder(this, CHANNEL_ID)
-                : new Notification.Builder(this);
-        Intent open = new Intent(this, MainActivity.class);
-        open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        PendingIntent pi = PendingIntent.getActivity(this, 0, open,
-                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-        nb.setSmallIcon(R.drawable.ic_notif)
-                .setContentTitle(title)
-                .setContentText(body)
-                .setStyle(new Notification.BigTextStyle().bigText(body))
-                .setAutoCancel(true)
-                .setContentIntent(pi);
-        if (Build.VERSION.SDK_INT < 26) nb.setPriority(Notification.PRIORITY_HIGH);
-        nm.notify((int) (System.currentTimeMillis() % 100000), nb.build());
+    private boolean listenerAllowed() {
+        String flat = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
+        if (flat == null) return false;
+        ComponentName me = new ComponentName(this, PaymentListener.class);
+        return flat.contains(me.flattenToString()) || flat.contains(me.flattenToShortString());
     }
 
     /** Métodos que la página puede llamar como window.CuentasAndroid.xxx() */
     public class Bridge {
         @JavascriptInterface
         public void notify(final String title, final String body) {
-            runOnUiThread(() -> showNotification(title, body));
+            runOnUiThread(() -> Notifs.show(MainActivity.this, Notifs.CH_ALERTS, title, body));
         }
 
         @JavascriptInterface
@@ -147,6 +146,52 @@ public class MainActivity extends Activity {
                     Toast.makeText(MainActivity.this, "No se pudo abrir el selector de archivos", Toast.LENGTH_LONG).show();
                 }
             });
+        }
+
+        /** Pagos detectados pendientes de añadir (JSON). Los entrega una sola vez. */
+        @JavascriptInterface
+        public String takePending() {
+            return Store.takePending(MainActivity.this);
+        }
+
+        /** Resumen del mes para poder avisar del límite con la app cerrada. */
+        @JavascriptInterface
+        public void syncSummary(String json) {
+            Store.syncSummary(MainActivity.this, json);
+        }
+
+        /** ¿Tiene la app permiso para leer notificaciones? */
+        @JavascriptInterface
+        public boolean isAutoAllowed() {
+            return listenerAllowed();
+        }
+
+        /** Abre la pantalla de Android para dar acceso a las notificaciones. */
+        @JavascriptInterface
+        public void openAutoSettings() {
+            runOnUiThread(() -> {
+                try {
+                    startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"));
+                } catch (Exception e) {
+                    startActivity(new Intent(Settings.ACTION_SETTINGS));
+                }
+            });
+        }
+
+        /** Abre la ficha de la app (para "Permitir ajustes restringidos" en Android 13+). */
+        @JavascriptInterface
+        public void openAppInfo() {
+            runOnUiThread(() -> {
+                try {
+                    startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.parse("package:" + getPackageName())));
+                } catch (Exception ignored) { }
+            });
+        }
+
+        @JavascriptInterface
+        public int sdk() {
+            return Build.VERSION.SDK_INT;
         }
     }
 
