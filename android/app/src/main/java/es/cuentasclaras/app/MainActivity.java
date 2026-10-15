@@ -154,6 +154,18 @@ public class MainActivity extends Activity {
             return Store.takePending(MainActivity.this);
         }
 
+        /** Avisos con importe que no se han apuntado (JSON). */
+        @JavascriptInterface
+        public String getSkipped() {
+            return Store.getSkipped(MainActivity.this);
+        }
+
+        /** Quita un aviso de la lista ("*" para vaciarla). */
+        @JavascriptInterface
+        public void removeSkipped(String id) {
+            Store.removeSkipped(MainActivity.this, id);
+        }
+
         /** Resumen del mes para poder avisar del límite con la app cerrada. */
         @JavascriptInterface
         public void syncSummary(String json) {

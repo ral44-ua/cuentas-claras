@@ -387,7 +387,7 @@ function importPending(){
     const dt=new Date(+p.ts||Date.now());const d=`${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}`;const ym=d.slice(0,7);
     if(!befores[ym])befores[ym]=monthStats(ym);
     const merchant=String(p.merchant||'Pago con tarjeta').slice(0,60);
-    (state.months[ym]=state.months[ym]||[]).push({id:newId(),t:'g',amt,cat:guessCat(merchant),d,note:merchant,m:merchant,ts:+p.ts||Date.now(),auto:true,src:String(p.app||'').slice(0,40)});
+    (state.months[ym]=state.months[ym]||[]).push({id:newId(),t:'g',amt,cat:guessCat(merchant),d,note:merchant,...(p.nomerchant?{}:{m:merchant}),ts:+p.ts||Date.now(),auto:true,src:String(p.app||'').slice(0,40)});
     touched.add(ym);n++}
   touched.forEach(saveMonth);
   return n?{n,befores}:null;
@@ -395,7 +395,7 @@ function importPending(){
 function syncNative(){
   if(!ANDROID||!ANDROID.syncSummary)return;
   try{const ym=curYM();const s=monthStats(ym);
-    ANDROID.syncSummary(JSON.stringify({ym,budget:+state.config.budget||0,spent:s.spent,fixed:s.fixedTotal,th:thresholds(),ack:(state.config.ack||{})[ym]||0,auto:!!state.config.autoPay}))}catch(e){}
+    ANDROID.syncSummary(JSON.stringify({ym,budget:+state.config.budget||0,spent:s.spent,fixed:s.fixedTotal,th:thresholds(),ack:(state.config.ack||{})[ym]||0,auto:!!state.config.autoPay,trusted:state.config.trusted||[]}))}catch(e){}
 }
 const autoAllowed=()=>{try{return !!(ANDROID&&ANDROID.isAutoAllowed&&ANDROID.isAutoAllowed())}catch(e){return false}};
 let curSheet=null;
@@ -403,19 +403,57 @@ function autoSheet(){
   const allowed=autoAllowed(),on=!!state.config.autoPay;let sdk=0;try{sdk=ANDROID.sdk()}catch(e){}
   const status=allowed&&on?`<span class="chip">${ICON.ok}Activado</span>`:allowed?`<span class="chip muted">Permiso concedido · desactivado</span>`:`<span class="chip warn">${ICON.warn}Falta el permiso</span>`;
   openSheet(`<div class="spread"><h3>Pagos con tarjeta</h3>${status}</div>
-    <div class="hint">Cuando pagas con tarjeta o con el móvil, tu banco o Google Wallet te envía una notificación. Cuentas Claras la lee, apunta el gasto con su comercio y le pone categoría. Todo se procesa en tu móvil: la app no tiene acceso a internet y no lee mensajes ni correos.</div>
+    <div class="hint">Cuando pagas con tarjeta o con el móvil, tu banco o Google Wallet te envía una notificación. Cuentas Claras la lee, apunta el gasto con su comercio y le pone categoría. Si tu banco avisa por SMS, también se leen esos mensajes, pero solo los que hablan de pagos con tarjeta. Todo se procesa en tu móvil: la app no tiene acceso a internet y nunca lee WhatsApp, correos ni conversaciones.</div>
     ${allowed?'':`<ol class="steps">
       <li>Pulsa <b>Dar acceso</b>, busca <b>Cuentas Claras</b> en la lista y actívalo.</li>
       ${sdk>=33?'<li>Si el interruptor aparece bloqueado («ajuste restringido»): pulsa <b>Información de la app</b>, toca el menú <b>⋮</b> de arriba a la derecha y elige <b>Permitir ajustes restringidos</b>. Después repite el paso 1.</li>':''}
-      <li>Comprueba que tu banco o Google Wallet te avisa de cada pago con una notificación.</li></ol>
+      <li>Activa en la app de tu banco los avisos de compras con tarjeta. Sin ese aviso, los pagos con la tarjeta física no se pueden detectar.</li></ol>
       <div class="grid2"><button class="btn primary" id="aopen">Dar acceso</button>${sdk>=33?'<button class="btn" id="ainfo">Información de la app</button>':''}</div>`}
     ${allowed?`<div class="seg" id="aseg"><button data-v="on" aria-pressed="${on}">Activado</button><button data-v="off" aria-pressed="${!on}">Desactivado</button></div>
-      <div class="hint">Los pagos detectados aparecen en Movimientos con la etiqueta <span class="tag auto">auto</span>. Si alguno no es correcto, tócalo para cambiarlo o borrarlo. Si le cambias la categoría, la recordaré para ese comercio.</div>`:''}
+      <div class="hint">Los pagos detectados aparecen en Movimientos con la etiqueta <span class="tag auto">auto</span>. Si alguno no es correcto, tócalo para cambiarlo o borrarlo. Si le cambias la categoría, la recordaré para ese comercio.</div>
+      <div class="hint"><b>¿No se apuntan los pagos con la tarjeta física?</b> Activa en la app de tu banco los avisos de compras con tarjeta.</div>`:''}
+    ${skippedHTML()}
     <button class="btn block" data-close>Cerrar</button>`);
   curSheet='auto';
+  bindSkipped();
   const o=$('#aopen');if(o)o.onclick=()=>{if(!state.config.autoPay){state.config.autoPay=true;saveConfig();syncNative()}ANDROID.openAutoSettings()};
   const i=$('#ainfo');if(i)i.onclick=()=>ANDROID.openAppInfo();
   const sg=$('#aseg');if(sg)segBind(sg,v=>{state.config.autoPay=v==='on';saveConfig();syncNative();render();autoSheet();toast(v==='on'?'Pagos automáticos activados':'Pagos automáticos desactivados')});
+}
+function getSkipped(){try{const a=JSON.parse((ANDROID&&ANDROID.getSkipped&&ANDROID.getSkipped())||'[]');return Array.isArray(a)?a.slice().reverse():[]}catch(e){return []}}
+function amountIn(text){const m=String(text||'').match(/(?:€|\bEUR)\s?-?(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d+(?:[.,]\d{1,2})?)|-?(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s?(?:€|EUR\b|euros?\b)/i);
+  if(!m)return 0;let x=(m[1]||m[2]).replace(/\s/g,'');const c=x.lastIndexOf(','),d=x.lastIndexOf('.');
+  if(c>=0&&d>=0)x=c>d?x.replace(/\./g,'').replace(',','.'):x.replace(/,/g,'');else if(c>=0)x=x.replace(',','.');else if(d>=0&&x.length-d-1===3)x=x.replace(/\./g,'');
+  const n=parseFloat(x);return isFinite(n)?n:0}
+function guessMerchant(text){const m=String(text||'').match(/\b(?:en|at)\s+([A-ZÁÉÍÓÚÑ0-9][^\n.,;:!()]{1,38}?)(?=\s+(?:con|por|el|la|ha|se|desde)\b|[.,;:!\n(]|$)/);return m&&!/tarjeta|cuenta|\d{3,}/i.test(m[1])?m[1].trim():''}
+function unseenSkipped(){const seen=state.config.skipSeen||0;return getSkipped().filter(x=>(+x.ts||0)>seen).length}
+function skippedHTML(){
+  if(!ANDROID||!ANDROID.getSkipped)return '';
+  const list=getSkipped();
+  const head=`<div class="eyebrow" style="margin-top:4px">Avisos con importe que no se han apuntado</div>`;
+  if(!list.length)return head+`<div class="hint">Aquí aparecerán los avisos con un importe en euros que no parezcan un pago, por ejemplo si tu banco usa un formato que no reconozco. Podrás añadirlos con un toque.</div>`;
+  return head+`<div class="hint">Toca uno para añadirlo como gasto. Si es de tu banco, puedes pedirme que a partir de ahora apunte siempre sus avisos.</div><div class="list">${list.map(x=>`<button class="item" data-skip="${esc(x.id)}" style="grid-template-columns:1fr auto"><span class="t"><b>${esc(x.app)}${x.title?' · '+esc(x.title):''}</b><small style="white-space:normal">${esc(x.text)}</small><small>${esc(new Date(+x.ts).toLocaleString('es-ES',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}))}</small></span><span class="a num">${amountIn(x.title+' '+x.text)?fmt(amountIn(x.title+' '+x.text)):''}</span></button>`).join('')}</div>
+    <button class="btn ghost" id="skipclear" style="align-self:flex-start">Vaciar esta lista</button>`;
+}
+function bindSkipped(){
+  if(getSkipped().length&&(state.config.skipSeen||0)<Date.now()){state.config.skipSeen=Date.now();saveConfig()}
+  $$('[data-skip]').forEach(b=>b.onclick=()=>skipSheet(b.dataset.skip));
+  const c=$('#skipclear');if(c)c.onclick=()=>{ANDROID.removeSkipped('*');autoSheet();toast('Lista vaciada')};
+}
+function skipSheet(id){
+  const x=getSkipped().find(y=>y.id===id);if(!x)return;
+  const trusted=(state.config.trusted||[]).includes(x.pkg);
+  openSheet(`<h3>Aviso de ${esc(x.app)}</h3>
+    <div class="banner info" style="flex-direction:column;gap:4px"><b>${esc(x.title||x.app)}</b><div>${esc(x.text)}</div></div>
+    ${trusted?'':`<label class="row" style="flex-wrap:nowrap;align-items:flex-start;gap:10px;font-size:14px"><input type="checkbox" id="strust" ${/messag|mms|sms/i.test(x.pkg)?'':'checked'} style="width:20px;height:20px;margin-top:1px;flex:none"><span>Apuntar siempre los avisos con importe de <b>${esc(x.app)}</b>. Seguiré ignorando devoluciones, ingresos, códigos y pagos rechazados.</span></label>`}
+    <div class="acts"><button class="btn" id="sdisc">Descartar</button><button class="btn primary" id="sadd">Añadir como gasto</button></div>`);
+  $('#sdisc').onclick=()=>{ANDROID.removeSkipped(x.id);autoSheet()};
+  $('#sadd').onclick=()=>{
+    const tr=$('#strust');if(tr&&tr.checked&&x.pkg){state.config.trusted=[...new Set([...(state.config.trusted||[]),x.pkg])];saveConfig();syncNative()}
+    const dt=new Date(+x.ts||Date.now());const merchant=guessMerchant(x.text)||guessMerchant(x.title)||'';
+    ANDROID.removeSkipped(x.id);
+    txSheet(null,{amt:amountIn(x.title+' '+x.text),d:`${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}`,note:merchant,cat:merchant?guessCat(merchant):null,auto:true,src:x.app,m:merchant||x.app,ts:+x.ts||Date.now()});
+  };
 }
 window.__cuentasSync=()=>{
   if(!ready)return;
@@ -428,7 +466,8 @@ function autoBanner(){
   if(!ANDROID||!ANDROID.isAutoAllowed)return '';
   const c=state.config;
   if(c.autoPay&&!autoAllowed())return `<div class="banner warn">${ICON.warn}<div style="flex:1">Los pagos con tarjeta automáticos están activados, pero falta el permiso de notificaciones.</div><button class="btn" data-act="auto">Revisar</button></div>`;
-  if(c.autoPay||c.autoPayDismissed)return '';
+  if(c.autoPay){const n=unseenSkipped();return n?`<div class="banner warn">${ICON.warn}<div style="flex:1">${n===1?'Ha llegado 1 aviso':`Han llegado ${n} avisos`} con importe que no he apuntado. Puede ser un pago con tarjeta.</div><button class="btn" data-act="auto">Revisar</button></div>`:''}
+  if(c.autoPayDismissed)return '';
   return `<div class="banner info">${ICON.info}<div style="flex:1"><b>Apunta tus pagos con tarjeta solos.</b> Cada vez que pagues, el gasto se añadirá automáticamente.</div><div style="display:flex;flex-direction:column;gap:6px"><button class="btn primary" data-act="auto">Activar</button><button class="btn ghost" data-act="autono" style="padding:2px">Ahora no</button></div></div>`;
 }
 
@@ -568,7 +607,9 @@ function vMovs(){
   const fx=s.fx.slice().sort((a,b)=>(a.day||1)-(b.day||1));
   const fixed=movFilter==='i'?'':`<section class="card"><h2>Gastos fijos de ${MONTHS[+viewYM.slice(5)-1]}<span class="num" style="font-weight:700">${fmt(s.fixedTotal)}</span></h2>
     ${fx.length?`<div class="list" style="margin-top:6px">${fx.map(f=>`<button class="item" data-fixed="${esc(f.id)}"><span class="ic" style="background:${catColor(f.cat)}">${esc(String(f.day||1))}</span><span class="t"><b>${esc(f.name)}${f.ex?'<span class="tag">ejemplo</span>':''}</b><small>${esc(catName(f.cat))} · se cobra el día ${f.day||1}</small></span><span class="a num">−${fmt(f.amt)}</span></button>`).join('')}</div>`:`<div class="empty" style="padding:12px 0"><b>Sin gastos fijos</b>Alquiler, luz, gimnasio… Añádelos en Presupuesto y se sumarán solos cada mes.</div>`}</section>`;
-  return seg+`<section class="card">${list}</section>`+fixed;
+  const n=(ANDROID&&state.config.autoPay&&viewYM===curYM())?unseenSkipped():0;
+  const sk=n?`<div class="banner warn">${ICON.warn}<div style="flex:1">${n===1?'Ha llegado 1 aviso':`Han llegado ${n} avisos`} con importe que no he apuntado.</div><button class="btn" data-act="auto">Revisar</button></div>`:'';
+  return sk+seg+`<section class="card">${list}</section>`+fixed;
 }
 function itemHTML(t){
   const inc=t.t==='i';const name=inc?((incById(t.cat)||{}).name||'Ingreso'):catName(t.cat);
@@ -668,16 +709,16 @@ window.addEventListener('scroll',()=>$('#top').classList.toggle('scrolled',windo
 
 /* ---------- hojas: movimiento ---------- */
 function findTx(id){for(const ym in state.months){const t=state.months[ym].find(x=>x.id===id);if(t)return{ym,t}}return null}
-function txSheet(id){
+function txSheet(id,pre){
   const found=id?findTx(id):null;const t=found?found.t:null;
-  let type=t?(t.t==='i'?'i':'g'):'g';let cat=t?t.cat:null;
-  const defDate=t?t.d:(viewYM===curYM()?todayStr():`${viewYM}-01`);
+  let type=t?(t.t==='i'?'i':'g'):'g';let cat=t?t.cat:(pre&&pre.cat)||null;
+  const defDate=t?t.d:pre&&pre.d?pre.d:(viewYM===curYM()?todayStr():`${viewYM}-01`);
   openSheet(`<h3>${t?'Editar movimiento':'Nuevo movimiento'}</h3>
     <div class="seg" id="ttype"><button data-v="g" aria-pressed="${type==='g'}">Gasto</button><button data-v="i" aria-pressed="${type==='i'}">Ingreso</button></div>
-    <div class="field"><label for="tamt">Importe (€)</label><input class="inp amount num" id="tamt" inputmode="decimal" placeholder="0,00" value="${t?String(t.amt).replace('.',','):''}" data-focus></div>
+    <div class="field"><label for="tamt">Importe (€)</label><input class="inp amount num" id="tamt" inputmode="decimal" placeholder="0,00" value="${t?String(t.amt).replace('.',','):pre&&pre.amt?String(pre.amt).replace('.',','):''}" data-focus></div>
     <div class="field"><label>Categoría</label><div class="cats" id="tcats"></div></div>
     <div class="grid2"><div class="field"><label for="tdate">Fecha</label><input class="inp" type="date" id="tdate" value="${defDate}"></div>
-    <div class="field"><label for="tnote">Nota</label><input class="inp" id="tnote" maxlength="60" placeholder="Opcional" value="${esc(t?t.note||'':'')}"></div></div>
+    <div class="field"><label for="tnote">Nota</label><input class="inp" id="tnote" maxlength="60" placeholder="Opcional" value="${esc(t?t.note||'':pre&&pre.note||'')}"></div></div>
     ${t&&t.auto?`<div class="hint">Añadido automáticamente${t.src?' desde '+esc(t.src):''}. Si cambias la categoría, la recordaré para este comercio.</div>`:''}
     <div class="acts">${t?'<button class="btn danger" id="tdel">Borrar</button>':''}<button class="btn primary" id="tsave">Guardar</button></div>`);
   const drawCats=()=>{const list=type==='i'?state.config.incCats.map(c=>({id:c.id,name:c.name,col:css('--good')})):state.config.cats.map(c=>({id:c.id,name:c.name,col:slotColor(c.slot)}));
@@ -692,9 +733,10 @@ function txSheet(id){
     if(!(amt>0)){toast('Escribe un importe mayor que 0');$('#tamt').focus();return}
     if(!/^\d{4}-\d{2}-\d{2}$/.test(d)){toast('Elige una fecha');return}
     const ym=d.slice(0,7);const before=monthStats(ym);
-    const rec={id:t?t.id:newId(),t:type,amt:r2(amt),cat,d,note:$('#tnote').value.trim().slice(0,60),ts:t?t.ts||Date.now():Date.now()};
+    const rec={id:t?t.id:newId(),t:type,amt:r2(amt),cat,d,note:$('#tnote').value.trim().slice(0,60),ts:t?t.ts||Date.now():pre&&pre.ts||Date.now()};
+    if(!t&&pre&&pre.auto&&type==='g'){rec.auto=true;if(pre.src)rec.src=pre.src;const mk=$('#tnote').value.trim()||pre.m;if(mk){rec.m=mk;state.config.mmap=state.config.mmap||{};state.config.mmap[normTxt(mk)]=cat;saveConfig()}}
     if(t){for(const k of ['auto','src','m','ex'])if(t[k])rec[k]=t[k];
-      if(t.auto&&type==='g'&&cat!==t.cat){state.config.mmap=state.config.mmap||{};state.config.mmap[normTxt(t.m||t.note)]=cat;saveConfig()}}
+      if(t.auto&&t.m&&type==='g'&&cat!==t.cat){state.config.mmap=state.config.mmap||{};state.config.mmap[normTxt(t.m||t.note)]=cat;saveConfig()}}
     if(found){state.months[found.ym]=state.months[found.ym].filter(x=>x.id!==t.id);if(found.ym!==ym)saveMonth(found.ym)}
     (state.months[ym]=state.months[ym]||[]).push(rec);saveMonth(ym);
     closeSheet();render();

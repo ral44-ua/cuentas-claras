@@ -48,20 +48,85 @@ final class Store {
         return sum;
     }
 
-    /** Evita apuntar dos veces el mismo pago (banco y Wallet avisan a la vez). */
-    static synchronized boolean isDuplicate(Context c, double amount, long now) {
+    /** Apps que el usuario ha marcado como de confianza (sus avisos con importe se apuntan siempre). */
+    static synchronized boolean isTrusted(Context c, String pkg) {
+        try {
+            JSONObject s = new JSONObject(sp(c).getString("summary", "{}"));
+            JSONArray t = s.optJSONArray("trusted");
+            if (t == null) return false;
+            for (int i = 0; i < t.length(); i++) if (pkg.equals(t.optString(i))) return true;
+        } catch (Exception ignored) { }
+        return false;
+    }
+
+    /** Guarda (solo en el móvil) los últimos avisos con importe que no se han apuntado. */
+    static synchronized void addSkipped(Context c, JSONObject o) {
+        try {
+            JSONArray a = new JSONArray(sp(c).getString("skipped", "[]"));
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject x = a.getJSONObject(i);
+                if (x.optString("text").equals(o.optString("text"))
+                        && x.optString("title").equals(o.optString("title"))) return; // aviso repetido
+            }
+            JSONArray out = new JSONArray();
+            int start = Math.max(0, a.length() - 14);
+            for (int i = start; i < a.length(); i++) out.put(a.get(i));
+            out.put(o);
+            sp(c).edit().putString("skipped", out.toString()).apply();
+        } catch (Exception ignored) { }
+    }
+
+    static synchronized String getSkipped(Context c) {
+        return sp(c).getString("skipped", "[]");
+    }
+
+    static synchronized void removeSkipped(Context c, String id) {
+        try {
+            JSONArray a = new JSONArray(sp(c).getString("skipped", "[]"));
+            JSONArray out = new JSONArray();
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject o = a.getJSONObject(i);
+                if (!id.equals(o.optString("id")) && !"*".equals(id)) out.put(o);
+            }
+            sp(c).edit().putString("skipped", out.toString()).apply();
+        } catch (Exception ignored) { }
+    }
+
+    /**
+     * Evita apuntar dos veces el mismo pago:
+     * - la misma notificación que se actualiza (misma clave e importe);
+     * - el mismo pago avisado por dos apps (Google Wallet al momento y el banco con retraso):
+     *   un aviso de otra app con el mismo importe en las 12 horas anteriores que aún no se ha
+     *   emparejado se considera el mismo pago. Cada aviso se empareja una sola vez, así que dos
+     *   cafés iguales pagados con el móvil siguen contando como dos.
+     */
+    static synchronized boolean isDuplicate(Context c, double amount, long now, String pkg, String key) {
         try {
             JSONArray a = new JSONArray(sp(c).getString("recent", "[]"));
             JSONArray keep = new JSONArray();
+            int match = -1;
             boolean dup = false;
             for (int i = 0; i < a.length(); i++) {
                 JSONObject o = a.getJSONObject(i);
                 long t = o.optLong("t");
-                if (now - t > 10 * 60 * 1000) continue;
+                if (now - t > 12L * 60 * 60 * 1000) continue;
                 keep.put(o);
-                if (Math.abs(o.optDouble("amt") - amount) < 0.005 && now - t < 3 * 60 * 1000) dup = true;
+                boolean same = Math.abs(o.optDouble("amt") - amount) < 0.005;
+                if (!same || dup) continue;
+                if (key != null && key.equals(o.optString("key"))) {
+                    dup = true; // la misma notificación actualizada
+                } else if (!pkg.equals(o.optString("pkg")) && !o.optBoolean("paired") && match < 0) {
+                    match = keep.length() - 1;
+                }
             }
-            if (!dup) keep.put(new JSONObject().put("amt", amount).put("t", now));
+            if (!dup && match >= 0) {
+                keep.getJSONObject(match).put("paired", true);
+                dup = true;
+            }
+            if (!dup) {
+                keep.put(new JSONObject().put("amt", amount).put("t", now).put("pkg", pkg)
+                        .put("key", key == null ? "" : key));
+            }
             sp(c).edit().putString("recent", keep.toString()).apply();
             return dup;
         } catch (Exception e) {

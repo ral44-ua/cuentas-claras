@@ -6,10 +6,19 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Reconoce en el texto de una notificación (banco, Google Wallet, Samsung Wallet…)
+ * Reconoce en el texto de una notificación (banco, Google Wallet, SMS del banco…)
  * un pago con tarjeta y extrae el importe y el comercio. Java puro: se puede probar sin Android.
  */
 final class PaymentParser {
+
+    /** App de banco u otra app normal. */
+    static final int NORMAL = 0;
+    /** Monedero (Google Wallet…) o app que el usuario ha marcado como de confianza. */
+    static final int TRUSTED = 1;
+    /** SMS: solo se aceptan mensajes que hablen claramente de un pago con tarjeta. */
+    static final int STRICT = 2;
+    /** Banco marcado como de confianza: se aceptan avisos de confirmación/autorización. */
+    static final int TRUSTED_BANK = 3;
 
     static final class Result {
         double amount;
@@ -18,39 +27,74 @@ final class PaymentParser {
 
     private static final String NUM =
             "(\\d{1,3}(?:\\.\\d{3})+(?:,\\d{1,2})?|\\d+(?:[.,]\\d{1,2})?)";
-    private static final Pattern AMOUNT = Pattern.compile(
-            "(?:€|\\bEUR)\\s?" + NUM + "|" + NUM + "\\s?(?:€|EUR\\b|euros?\\b)",
+    static final Pattern AMOUNT = Pattern.compile(
+            "(?:€|\\bEUR)\\s?-?" + NUM + "|-?" + NUM + "\\s?(?:€|EUR\\b|euros?\\b)",
             Pattern.CASE_INSENSITIVE);
 
     /** Palabras que indican que es un gasto. */
     private static final String[] POSITIVE = {
-            "pago", "pagad", "pagaste", "has pagado", "compra", "cargo", "cobro", "cobrad",
-            "operacion con", "operacion de", "transaccion", "bizum enviado", "has enviado",
-            "payment", "paid", "purchase", "spent", "you spent", "card used", "tarjeta"
+            "pago", "pagad", "pagaste", "compra", "cargo", "cobro", "cobrad", "operacion", "transaccion",
+            "movimiento", "gasto", "has realizado", "bizum enviado", "has enviado", "tarjeta",
+            "payment", "paid", "purchase", "spent", "card used", "transaction"
     };
 
-    /** Palabras que descartan la notificación: ingresos, devoluciones, rechazos, códigos, publicidad… */
-    private static final String[] NEGATIVE = {
-            "devolucion", "reembols", "recibid", "has recibido", "ingreso", "abono", "cashback",
-            "rechaz", "deneg", "cancelad", "anulad", "fallid", "no se ha podido", "no ha podido",
-            "insuficiente", "codigo", "clave", "contrasena", "verifica", "autoriza", "confirma",
-            "oferta", "promocion", "descuento", "gana ", "sorteo", "prestamo", "financia",
-            "refund", "received", "declined", "failed", "verification", "otp",
-            "reintegro", "retirada de efectivo", "cajero"
+    /** Para SMS: además del importe, tiene que hablar de tarjeta o de una compra. */
+    private static final String[] STRICT_POSITIVE = {
+            "tarjeta", "compra", "cargo", "pago con", "pago en", "operacion con", "operacion de"
     };
+
+    /** Descartan siempre: ingresos, devoluciones, rechazos, retiradas de efectivo… */
+    private static final String[] NEGATIVE_HARD = {
+            "devolucion", "devuelto", "reembols", "has recibido", "te han enviado", "te ha enviado",
+            "recibido un", "recibido una", "transferencia recibida", "te han ingresado", "ingreso de",
+            "abono de", "nomina", "cashback", "rechaz", "deneg", "cancelad", "anulad", "fallid",
+            "no se ha podido", "no ha podido", "no se ha realizado", "insuficiente",
+            "codigo de verificacion", "codigo de seguridad", "codigo de confirmacion", "codigo de un solo uso",
+            "contrasena", "otp", "refund", "received", "declined", "failed", "verification code",
+            "retirada de efectivo", "reintegro", "cajero", "sacar dinero",
+            "tu saldo", "su saldo", "saldo es", "saldo actual", "saldo de tu cuenta", "saldo de su cuenta", "saldo bajo",
+            "transferencia", "recibo", "domiciliacion"
+    };
+
+    /** Descartan en apps normales y SMS (publicidad, peticiones de confirmación…). */
+    private static final String[] NEGATIVE_SOFT = {
+            "oferta", "promocion", "gana ", "ganar ", "sorteo", "prestamo", "financia", "descuento",
+            "confirma la", "confirma tu", "confirma el", "confirmar la", "autoriza la", "autoriza tu",
+            "autorizar la", "pendiente de autoriz", "verifica", "acepta la", "aprueba la", "¿"
+    };
+
+    /** Códigos de un solo uso: "tu código es 123456". */
+    private static final Pattern OTP = Pattern.compile(
+            "\\b(codigo|clave|pin)\\b.{0,80}?(?<![\\d.,*])\\d{4,8}(?![\\d.,])|(?<![\\d.,*])\\d{4,8}(?![\\d.,]).{0,20}\\b(codigo|clave)\\b");
+
+    private static final Pattern LINK = Pattern.compile("https?:|www\\.|\\b[a-z0-9-]+\\.(com|es|net|info|link|ly|me|top|xyz|app)(/|\\b)");
+
+    /** Comercio en mayúsculas cuando no va precedido de "en" (p. ej. "Movimiento: -15,30 € PRIMARK"). */
+    private static final Pattern UPPER = Pattern.compile("\\b([A-ZÁÉÍÓÚÑ0-9&'*][A-ZÁÉÍÓÚÑ0-9&'*.\\-]{2,}(?:\\s+[A-ZÁÉÍÓÚÑ0-9&'.\\-]{2,}){0,3})\\b");
+    private static final String[] NOT_MERCHANT = {"eur", "euros", "tarjeta", "compra", "pago", "cargo", "visa",
+            "mastercard", "debito", "credito", "operacion", "movimiento", "importe", "saldo", "unicaja", "bbva",
+            "santander", "caixabank", "sabadell", "openbank", "ing", "bankinter", "abanca", "kutxabank", "ibercaja",
+            "cajamar", "revolut", "n26", "bizum", "sms", "nfc", "pin"};
 
     private static final Pattern MERCHANT = Pattern.compile(
-            "(?:\\ben|\\bat|\\bin)\\s+([^\\n.,;:!()]{2,60}?)(?=\\s+(?:con|por|el|a las|desde|via|with|on|using|-)\\b|[.,;:!\\n(]|$)",
+            "(?:\\ben|\\bat|\\bin)\\s+([^\\n.,;:!()]{2,60}?)(?=\\s+(?:con|por|el|la|a las|desde|via|with|on|using|ha|se|confirmad[oa]|autorizad[oa]|realizad[oa]|aceptad[oa]|-)\\b|[.,;:!\\n(]|$)",
             Pattern.CASE_INSENSITIVE);
 
-    static Result parse(String title, String body, boolean trustedWallet) {
+    static Result parse(String title, String body, int mode) {
         String t = title == null ? "" : title.trim();
         String b = body == null ? "" : body.trim();
         String all = t + "\n" + b;
         String low = norm(all);
 
-        if (!trustedWallet && !containsAny(low, POSITIVE)) return null;
-        if (containsAny(low, NEGATIVE)) return null;
+        if (containsAny(low, NEGATIVE_HARD)) return null;
+        if (OTP.matcher(low).find()) return null;
+        if (mode == NORMAL || mode == STRICT) {
+            if (containsAny(low, NEGATIVE_SOFT)) return null;
+        }
+        if (mode != TRUSTED && !containsAny(low, POSITIVE)) return null;
+        if (mode == STRICT && !containsAny(low, STRICT_POSITIVE)) return null;
+        // SMS con enlaces: los bancos no mandan enlaces en los avisos de compra (suele ser phishing)
+        if (mode == STRICT && LINK.matcher(low).find()) return null;
 
         Matcher m = AMOUNT.matcher(all);
         if (!m.find()) return null;
@@ -69,8 +113,18 @@ final class PaymentParser {
         return r;
     }
 
+    /** ¿Hay un importe en euros en el texto? (para la lista de avisos no apuntados) */
+    static boolean hasAmount(String s) {
+        return s != null && AMOUNT.matcher(s).find();
+    }
+
+    /** ¿Parece un aviso de pago aunque no se haya apuntado? (para guardar SMS en la lista) */
+    static boolean looksLikePayment(String s) {
+        return containsAny(norm(s), STRICT_POSITIVE);
+    }
+
     static double parseAmount(String s) {
-        s = s.replace(" ", "").replace(" ", "").replace(" ", "").trim();
+        s = s.replace(" ", "").replace(" ", "").replace(" ", "").replace("-", "").trim();
         int c = s.lastIndexOf(','), d = s.lastIndexOf('.');
         if (c >= 0 && d >= 0) {
             if (c > d) s = s.replace(".", "").replace(',', '.');
@@ -92,6 +146,17 @@ final class PaymentParser {
                 if (c != null) return c;
             }
         }
+        Matcher u = UPPER.matcher(body == null ? "" : body);
+        while (u.find()) {
+            String cand = u.group(1).trim();
+            String n = norm(cand);
+            boolean bad = n.replaceAll("[^a-z]", "").length() < 3;
+            for (String w : NOT_MERCHANT) if (n.equals(w) || n.startsWith(w + " ")) bad = true;
+            if (!bad) {
+                String c = clean(cand);
+                if (c != null) return c;
+            }
+        }
         // Google Wallet y similares: el título es el comercio y el texto el importe
         String t = clean(title);
         if (t != null && !AMOUNT.matcher(title).find() && !containsAny(norm(title), POSITIVE)) return t;
@@ -105,8 +170,9 @@ final class PaymentParser {
         String n = norm(s);
         if (n.matches(".*\\d{3,}.*")) return null;              // números de tarjeta, referencias
         if (n.contains("tarjeta") || n.contains("cuenta") || n.contains("visa") || n.contains("mastercard")
-                || n.contains("••") || n.contains("**") || n.contains("tu ") || n.contains("su ")
-                || n.startsWith("el dia") || n.startsWith("fecha")) return null;
+                || n.contains("••") || n.contains("**") || n.startsWith("tu ") || n.startsWith("su ")
+                || n.contains(" tu ") || n.startsWith("el dia") || n.startsWith("fecha")
+                || n.startsWith("comercio")) return null;
         if (AMOUNT.matcher(s).find()) return null;
         if (s.length() > 40) s = s.substring(0, 40).trim();
         return s;
