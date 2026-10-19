@@ -23,6 +23,7 @@ Abre esta carpeta con Android Studio y usa **Build → Build App Bundle(s) / APK
 
 ## Estructura
 
-- `app/src/main/assets/index.html`: toda la interfaz (gráficos con Chart.js, incluido en la app, funciona sin conexión).
+- `app/src/main/assets/index.html`: toda la interfaz, con sus gráficos y animaciones. Funciona sin conexión.
+- `app/src/main/assets/fonts/`: la tipografía Mona Sans (licencia SIL Open Font License, en `OFL.txt`).
 - `app/src/main/java/.../MainActivity.java`: contenedor nativo, notificaciones y copias de seguridad.
 - `.github/workflows/compilar-apk.yml`: compilación automática en GitHub.

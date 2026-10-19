@@ -8,6 +8,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.view.HapticFeedbackConstants;
+import android.view.View;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -44,6 +46,10 @@ public class MainActivity extends Activity {
         askNotificationPermission();
 
         web = new WebView(this);
+        // Mismo color que el papel de la app: al abrir no hay destello blanco, ni en modo oscuro
+        web.setBackgroundColor(getColor(R.color.app_bg));
+        web.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        web.setHapticFeedbackEnabled(true);
         setContentView(web);
 
         WebSettings s = web.getSettings();
@@ -198,6 +204,32 @@ public class MainActivity extends Activity {
                     startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                             Uri.parse("package:" + getPackageName())));
                 } catch (Exception ignored) { }
+            });
+        }
+
+        /** Vibración breve del sistema (respeta el ajuste de vibración al tocar del móvil). */
+        @JavascriptInterface
+        public void haptic(final String kind) {
+            runOnUiThread(() -> {
+                if (web == null) return;
+                int c;
+                switch (kind == null ? "" : kind) {
+                    case "confirm":
+                        c = Build.VERSION.SDK_INT >= 30 ? HapticFeedbackConstants.CONFIRM : HapticFeedbackConstants.VIRTUAL_KEY;
+                        break;
+                    case "reject":
+                        c = Build.VERSION.SDK_INT >= 30 ? HapticFeedbackConstants.REJECT : HapticFeedbackConstants.LONG_PRESS;
+                        break;
+                    case "warn":
+                        c = HapticFeedbackConstants.LONG_PRESS;
+                        break;
+                    case "light":
+                        c = HapticFeedbackConstants.KEYBOARD_TAP;
+                        break;
+                    default:
+                        c = HapticFeedbackConstants.CLOCK_TICK;
+                }
+                web.performHapticFeedback(c);
             });
         }
 

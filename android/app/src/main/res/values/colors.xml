@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="icon_bg">#0B6B70</color>
+    <!-- Mismos colores que la interfaz (papel, barra de pestañas y billete) -->
+    <color name="app_bg">#F1F2F6</color>
+    <color name="nav_bg">#FFFFFF</color>
+    <color name="icon_bg">#141C3A</color>
+    <color name="accent">#2E46D6</color>
 </resources>
